@@ -1,6 +1,6 @@
 {
   "name": "twitch-vod-downloader",
-  "version": "26.3.3",
+  "version": "26.3.4",
   "private": true,
   "description": "Small self-hosted webapp to queue and download Twitch VODs at max quality via yt-dlp, with NTFY notifications.",
   "scripts": {

@@ -12,6 +12,7 @@ import {
   findCompletedFile,
   formatDuration,
   resolveManagedFile,
+  sanitizeEstimatedSize,
   VodInfo,
 } from "./downloader";
 import { sendNtfyNotification } from "./notify";
@@ -482,10 +483,13 @@ class DownloadQueue extends EventEmitter {
   }
 
   private applySize(job: DownloadJob, bytes: number | null | undefined): boolean {
-    if (bytes == null || bytes <= 0) return false;
-    if (job.vodSizeBytes != null && bytes < job.vodSizeBytes * 1.02) return false;
-    job.vodSizeBytes = bytes;
-    job.vodSizeLabel = formatBytes(bytes);
+    const sane = sanitizeEstimatedSize(bytes, job.vodDurationSeconds);
+    if (sane == null) return false;
+    if (job.vodSizeBytes != null && Math.abs(sane - job.vodSizeBytes) / job.vodSizeBytes < 0.03) {
+      return false;
+    }
+    job.vodSizeBytes = sane;
+    job.vodSizeLabel = formatBytes(sane);
     return true;
   }
 

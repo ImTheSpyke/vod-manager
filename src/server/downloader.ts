@@ -133,6 +133,33 @@ export function parseYtDlpSize(raw: string | null | undefined): number | null {
   return Math.round(bytes);
 }
 
+/** yt-dlp `tbr` is kbps. Used when HLS does not expose filesize. */
+function estimateSizeFromBitrate(
+  tbrRaw: string | null | undefined,
+  durationSeconds: number | null
+): number | null {
+  if (durationSeconds == null || durationSeconds <= 0) return null;
+  const tbr = parseFloat(String(tbrRaw || "").trim());
+  if (!Number.isFinite(tbr) || tbr <= 0) return null;
+  return Math.round(((tbr * 1000) / 8) * durationSeconds);
+}
+
+/**
+ * Drop runaway HLS estimates. Twitch 1080p source is typically well under 15 Mbps;
+ * a 5h VOD at 15 Mbps is ~33 GB, not 45+ GB.
+ */
+export function sanitizeEstimatedSize(
+  bytes: number | null | undefined,
+  durationSeconds: number | null
+): number | null {
+  if (bytes == null || bytes <= 0) return null;
+  if (durationSeconds != null && durationSeconds > 30) {
+    const cap = durationSeconds * ((15 * 1_000_000) / 8);
+    if (bytes > cap * 1.15) return null;
+  }
+  return bytes;
+}
+
 export function formatVodDate(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const compact = raw.replace(/-/g, "");
@@ -251,15 +278,24 @@ function parseProgressLine(
   }
 
   const match = line.match(
-    /\[download\]\s+(\d{1,3}(?:\.\d+)?)%\s+of\s+~?\s*(\S+)(?:\s+at\s+(\S+))?(?:\s+ETA\s+(\S+))?/i
+    /\[download\]\s+(\d{1,3}(?:\.\d+)?)%\s+of\s+(~)?\s*(\S+)(?:\s+at\s+(\S+))?(?:\s+ETA\s+(\S+))?(?:\s+\(frag\s+(\d+)\/(\d+)\))?/i
   );
   if (!match) return null;
   const percent = parseFloat(match[1]);
   if (Number.isNaN(percent)) return null;
-  const totalBytes = parseYtDlpSize(match[2]);
-  const speed = match[3] && match[3] !== "Unknown" ? match[3] : null;
-  const eta = match[4] && match[4] !== "Unknown" ? match[4] : null;
-  return { percent, speed, eta, totalBytes };
+  const approximate = match[2] === "~";
+  const totalBytes = parseYtDlpSize(match[3]);
+  const speed = match[4] && match[4] !== "Unknown" ? match[4] : null;
+  const eta = match[5] && match[5] !== "Unknown" ? match[5] : null;
+  const fragCurrent = match[6] != null ? parseInt(match[6], 10) : null;
+  if (fragCurrent != null && match[7]) {
+    fragmentState.total = parseInt(match[7], 10);
+  }
+  // HLS `~` totals at 0% / frag 0 are extrapolated from a tiny sample and often 2–3x too high.
+  const sizeReliable =
+    totalBytes != null &&
+    (!approximate || percent >= 1.5 || (fragCurrent != null && fragCurrent >= 2));
+  return { percent, speed, eta, totalBytes: sizeReliable ? totalBytes : null };
 }
 
 function parseDateFromFilename(filePath: string): string | null {
@@ -436,6 +472,7 @@ function parseMetaLine(line: string): VodInfo | null {
     channelUrlRaw,
     uploaderUrlRaw,
     filesizeRaw,
+    tbrRaw,
     ...titleParts
   ] = raw.split("|");
   const uploadDate = formatVodDate(dateRaw && dateRaw !== "NA" ? dateRaw : null);
@@ -448,7 +485,8 @@ function parseMetaLine(line: string): VodInfo | null {
     (durationSeconds != null ? formatDuration(durationSeconds) : null);
   const channel = pickChannel(uploaderRaw, channelRaw);
   const channelUrl = pickChannelUrl(channelUrlRaw, uploaderUrlRaw, uploaderIdRaw);
-  const filesizeBytes = parseYtDlpSize(filesizeRaw);
+  const filesizeBytes =
+    parseYtDlpSize(filesizeRaw) || estimateSizeFromBitrate(tbrRaw, durationSeconds);
   const title = cleanMetaField(titleParts.join("|"));
   return {
     uploadDate,
@@ -495,9 +533,9 @@ function runYtDlpOnce(
       "--retry-sleep",
       "linear=5:30:5",
       "--print",
-      "before_dl:META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(title)s",
+      "before_dl:META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(tbr)s|%(title)s",
       "--print",
-      "META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(title)s",
+      "META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(tbr)s|%(title)s",
       "--print",
       "after_move:FILE:%(filepath)s",
       "-o",
@@ -538,7 +576,10 @@ function runYtDlpOnce(
         const progress = parseProgressLine(line, fragmentState);
         if (progress) {
           const smoothed = smoother.update(progress.percent, progress.eta, progress.speed);
-          callbacks.onProgress({ ...smoothed, totalBytes: progress.totalBytes });
+          callbacks.onProgress({
+            ...smoothed,
+            totalBytes: sanitizeEstimatedSize(progress.totalBytes, meta?.durationSeconds ?? null),
+          });
         }
       }
     };

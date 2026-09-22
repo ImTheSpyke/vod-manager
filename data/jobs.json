@@ -26,6 +26,7 @@
     "vodSizeBytes": null,
     "vodSizeLabel": null,
     "ignoreStorageLimit": false,
+    "pausedForStorage": false,
     "storageOverByBytes": null,
     "storageOverByLabel": null,
     "fileDeleted": true,
