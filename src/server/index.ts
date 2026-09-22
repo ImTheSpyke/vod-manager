@@ -321,20 +321,15 @@ app.post("/api/jobs/:id/youtube", requireAuth, (req: Request, res: Response) => 
   }
   const body = req.body || {};
   const meta = {
-    producer: typeof body.producer === "string" ? body.producer : "",
-    observer1: typeof body.observer1 === "string" ? body.observer1 : "",
-    observer2: typeof body.observer2 === "string" ? body.observer2 : "",
     playlistId: typeof body.playlistId === "string" && body.playlistId ? body.playlistId : null,
     title: typeof body.title === "string" ? body.title.trim().slice(0, 100) : "",
     privacy: parseYoutubePrivacy(body.privacy),
+    description: typeof body.description === "string" ? body.description.slice(0, 5000) : "",
   };
   const currentYt = readSettings().youtube;
   writeSettings({
     youtube: {
       ...currentYt,
-      producer: meta.producer,
-      observer1: meta.observer1,
-      observer2: meta.observer2,
       playlistId: meta.playlistId || "",
       privacy: meta.privacy,
     },

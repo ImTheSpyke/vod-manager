@@ -56,9 +56,6 @@ export interface NtfySettings {
 
 export interface YoutubeAppSettings {
   autoUpload: boolean;
-  producer: string;
-  observer1: string;
-  observer2: string;
   playlistId: string;
   privacy: YoutubePrivacy;
 }
@@ -79,9 +76,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   youtube: {
     autoUpload: false,
-    producer: "",
-    observer1: "",
-    observer2: "",
     playlistId: "",
     privacy: "unlisted",
   },

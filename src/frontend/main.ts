@@ -43,9 +43,6 @@ interface NtfySettings {
 
 interface YoutubeAppSettings {
   autoUpload: boolean;
-  producer: string;
-  observer1: string;
-  observer2: string;
   playlistId: string;
   privacy: "public" | "unlisted" | "private";
 }
@@ -97,9 +94,7 @@ const youtubeError = $<HTMLDivElement>("youtube-error");
 const ytTitle = $<HTMLInputElement>("yt-title");
 const ytTitleCount = $<HTMLSpanElement>("yt-title-count");
 const ytPrivacy = $<HTMLSelectElement>("yt-privacy");
-const ytProducer = $<HTMLInputElement>("yt-producer");
-const ytObserver1 = $<HTMLInputElement>("yt-observer1");
-const ytObserver2 = $<HTMLInputElement>("yt-observer2");
+const ytDescription = $<HTMLTextAreaElement>("yt-description");
 const ytPlaylist = $<HTMLSelectElement>("yt-playlist");
 const autoUploadWrap = $<HTMLLabelElement>("auto-upload-wrap");
 const autoUploadToggle = $<HTMLInputElement>("auto-upload-toggle");
@@ -782,16 +777,10 @@ autoUploadToggle.addEventListener("change", () => {
 });
 
 function loadYoutubeFormDraft(): {
-  producer: string;
-  observer1: string;
-  observer2: string;
   privacy: "public" | "unlisted" | "private";
   playlistId: string;
 } {
   const empty = {
-    producer: "",
-    observer1: "",
-    observer2: "",
     privacy: "unlisted" as const,
     playlistId: "",
   };
@@ -804,9 +793,6 @@ function loadYoutubeFormDraft(): {
         ? parsed.privacy
         : "unlisted";
     return {
-      producer: typeof parsed.producer === "string" ? parsed.producer : "",
-      observer1: typeof parsed.observer1 === "string" ? parsed.observer1 : "",
-      observer2: typeof parsed.observer2 === "string" ? parsed.observer2 : "",
       privacy,
       playlistId: typeof parsed.playlistId === "string" ? parsed.playlistId : "",
     };
@@ -819,13 +805,21 @@ function saveYoutubeFormDraft(): void {
   localStorage.setItem(
     YT_FORM_KEY,
     JSON.stringify({
-      producer: ytProducer.value,
-      observer1: ytObserver1.value,
-      observer2: ytObserver2.value,
       privacy: ytPrivacy.value,
       playlistId: ytPlaylist.value || "",
     })
   );
+}
+
+function jobChannelUrl(job: DownloadJob | undefined): string {
+  if (!job) return "";
+  if (job.channelUrl) return job.channelUrl;
+  if (job.channel) return `https://www.twitch.tv/${job.channel}`;
+  return "";
+}
+
+function defaultYoutubeDescription(job: DownloadJob | undefined): string {
+  return `twitch channel: ${jobChannelUrl(job)}\n\nProducer:\nObserver 1:\nObserver 2:\n`;
 }
 
 function defaultYoutubeTitle(job: DownloadJob | undefined): string {
@@ -856,9 +850,6 @@ async function openYoutubeModal(jobId: string): Promise<void> {
   } catch {
     settingsDraft = undefined;
   }
-  ytProducer.value = settingsDraft?.producer || draft.producer;
-  ytObserver1.value = settingsDraft?.observer1 || draft.observer1;
-  ytObserver2.value = settingsDraft?.observer2 || draft.observer2;
   ytPrivacy.value = settingsDraft?.privacy || draft.privacy || "unlisted";
   const preferredPlaylist = settingsDraft?.playlistId || draft.playlistId || "";
   ytPlaylist.replaceChildren();
@@ -871,6 +862,7 @@ async function openYoutubeModal(jobId: string): Promise<void> {
   const jobs = await api<DownloadJob[]>("/api/jobs").catch(() => [] as DownloadJob[]);
   const job = jobs.find((j) => j.id === jobId);
   ytTitle.value = defaultYoutubeTitle(job);
+  ytDescription.value = defaultYoutubeDescription(job);
   updateTitleCount();
   youtubeModal.classList.remove("hidden");
 
@@ -924,9 +916,7 @@ youtubeForm.addEventListener("submit", async (e) => {
       body: JSON.stringify({
         title: ytTitle.value.trim().slice(0, 100),
         privacy: ytPrivacy.value,
-        producer: ytProducer.value,
-        observer1: ytObserver1.value,
-        observer2: ytObserver2.value,
+        description: ytDescription.value.slice(0, 5000),
         playlistId: ytPlaylist.value || null,
       }),
     });

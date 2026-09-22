@@ -96,10 +96,10 @@ export function writeSettings(partial: DeepPartial<AppSettings>): AppSettings {
     merged.youtube.privacy = (
       privacy === "public" || privacy === "private" || privacy === "unlisted" ? privacy : "unlisted"
     ) as YoutubePrivacy;
-    merged.youtube.producer = String(merged.youtube.producer || "");
-    merged.youtube.observer1 = String(merged.youtube.observer1 || "");
-    merged.youtube.observer2 = String(merged.youtube.observer2 || "");
     merged.youtube.playlistId = String(merged.youtube.playlistId || "");
+    delete (merged.youtube as { producer?: string }).producer;
+    delete (merged.youtube as { observer1?: string }).observer1;
+    delete (merged.youtube as { observer2?: string }).observer2;
   }
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2), "utf-8");
   return merged;

@@ -390,12 +390,12 @@ class DownloadQueue extends EventEmitter {
       playlistId = null;
     }
     const started = this.startYoutubeUpload(job.id, {
-      producer: yt.producer || "",
-      observer1: yt.observer1 || "",
-      observer2: yt.observer2 || "",
       playlistId,
       title: buildYoutubeTitle({ title: job.title, vodDate: job.vodDate }),
       privacy: parseYoutubePrivacy(yt.privacy),
+      description: buildYoutubeDescription(
+        job.channelUrl || (job.channel ? `https://www.twitch.tv/${job.channel}` : null)
+      ),
     });
     if (!started) {
       this.appendLog(job, "Auto-upload: could not start YouTube upload.");
@@ -412,13 +412,11 @@ class DownloadQueue extends EventEmitter {
       const title =
         (meta.title || "").trim().slice(0, 100) ||
         buildYoutubeTitle({ title: job.title, vodDate: job.vodDate });
-      const description = buildYoutubeDescription({
-        channelUrl:
-          job.channelUrl || (job.channel ? `https://www.twitch.tv/${job.channel}` : null),
-        producer: meta.producer,
-        observer1: meta.observer1,
-        observer2: meta.observer2,
-      });
+      const channelUrl =
+        job.channelUrl || (job.channel ? `https://www.twitch.tv/${job.channel}` : null);
+      const description = (
+        (meta.description || "").trim() || buildYoutubeDescription(channelUrl)
+      ).slice(0, 5000);
       const privacy = parseYoutubePrivacy(meta.privacy);
       const result = await uploadToYoutube({
         filePath,

@@ -16,12 +16,10 @@ export interface YoutubePlaylist {
 }
 
 export interface YoutubeUploadMeta {
-  producer: string;
-  observer1: string;
-  observer2: string;
   playlistId: string | null;
   title?: string;
   privacy?: YoutubePrivacy;
+  description?: string;
 }
 
 export const YOUTUBE_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube";
@@ -133,18 +131,9 @@ export function buildYoutubeTitle(opts: { title: string | null; vodDate: string 
   return (prefix + rest).slice(0, 100);
 }
 
-export function buildYoutubeDescription(opts: {
-  channelUrl: string | null;
-  producer: string;
-  observer1: string;
-  observer2: string;
-}): string {
-  return [
-    `Twitch channel: ${opts.channelUrl || ""}`,
-    `Producer: ${opts.producer.trim()}`,
-    `Observer 1: ${opts.observer1.trim()}`,
-    `Observer 2: ${opts.observer2.trim()}`,
-  ].join("\n");
+export function buildYoutubeDescription(channelUrl: string | null | undefined): string {
+  const url = (channelUrl || "").trim();
+  return `twitch channel: ${url}\n\nProducer:\nObserver 1:\nObserver 2:\n`;
 }
 
 async function startResumableSession(

@@ -105,7 +105,7 @@
               <input type="checkbox" id="yt-auto-upload" />
               Auto-upload after download
             </label>
-            <p class="hint">Uses the last producer / observers / playlist / privacy from the upload popup. Titles stay <code>[VOD] YYYY-MM-DD - …</code> unless you upload manually and edit them.</p>
+            <p class="hint">Uses the last playlist / privacy from the upload popup. Description is a blank template with the Twitch channel URL. Titles stay <code>[VOD] YYYY-MM-DD - …</code> unless you upload manually and edit them.</p>
             <p class="hint">Authorize from here when the token expires. In Google Cloud, use a <strong>Web application</strong> OAuth client. Add the URL below as an Authorized redirect URI, and your site origin (e.g. https://your.domain) as an Authorized JavaScript origin if asked.</p>
             <label>
               Redirect URI
@@ -146,16 +146,8 @@
             </select>
           </label>
           <label>
-            Producer
-            <input type="text" id="yt-producer" autocomplete="off" />
-          </label>
-          <label>
-            Observer 1
-            <input type="text" id="yt-observer1" autocomplete="off" />
-          </label>
-          <label>
-            Observer 2
-            <input type="text" id="yt-observer2" autocomplete="off" />
+            Description
+            <textarea id="yt-description" rows="8" maxlength="5000" autocomplete="off"></textarea>
           </label>
           <label>
             Playlist
