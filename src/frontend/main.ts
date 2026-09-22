@@ -100,6 +100,8 @@ const autoUploadToggle = $<HTMLInputElement>("auto-upload-toggle");
 const ytAutoUpload = $<HTMLInputElement>("yt-auto-upload");
 
 let eventSource: EventSource | null = null;
+let hydrateTimer: number | null = null;
+let reconnectTimer: number | null = null;
 let youtubeEnabled = false;
 let autoUploadEnabled = false;
 let youtubeJobId: string | null = null;
@@ -135,6 +137,7 @@ async function checkSession(): Promise<void> {
     syncAutoUploadUi();
     whoami.textContent = data.username ? `Signed in as ${data.username}` : "";
     showView("main");
+    void hydrateDashboard();
     startEventStream();
     loadSettingsIntoForm().catch(() => void 0);
     handleYoutubeOauthReturn().catch(() => void 0);
@@ -159,30 +162,77 @@ loginForm.addEventListener("submit", async (e) => {
 });
 
 logoutBtn.addEventListener("click", async () => {
-  eventSource?.close();
-  eventSource = null;
+  stopEventStream();
   await api("/api/logout", { method: "POST" });
   showView("login");
 });
 
+async function hydrateDashboard(): Promise<void> {
+  try {
+    const [jobs, storage] = await Promise.all([
+      api<DownloadJob[]>("/api/jobs"),
+      api<StorageInfo>("/api/storage").catch(() => null),
+    ]);
+    if (Array.isArray(jobs)) renderJobs(jobs);
+    if (storage) renderStorage(storage);
+  } catch {
+    /* live stream may still fill in */
+  }
+}
+
+function scheduleHydrate(): void {
+  if (hydrateTimer != null) return;
+  hydrateTimer = window.setTimeout(() => {
+    hydrateTimer = null;
+    void hydrateDashboard();
+  }, 400);
+}
+
+function stopEventStream(): void {
+  if (reconnectTimer != null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (hydrateTimer != null) {
+    window.clearTimeout(hydrateTimer);
+    hydrateTimer = null;
+  }
+  eventSource?.close();
+  eventSource = null;
+}
+
+function applyStreamPayload(payload: StreamPayload | DownloadJob[]): void {
+  if (Array.isArray(payload)) {
+    renderJobs(payload);
+    return;
+  }
+  if (payload.storage) renderStorage(payload.storage);
+  if (Array.isArray(payload.jobs)) renderJobs(payload.jobs);
+}
+
 function startEventStream(): void {
-  if (eventSource) return;
+  if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
+  eventSource?.close();
   eventSource = new EventSource("/api/events");
   eventSource.onmessage = (evt) => {
+    if (!evt.data) return;
     try {
-      const payload = JSON.parse(evt.data) as StreamPayload | DownloadJob[];
-      if (Array.isArray(payload)) {
-        renderJobs(payload);
-        return;
-      }
-      if (payload.storage) renderStorage(payload.storage);
-      renderJobs(payload.jobs || []);
+      applyStreamPayload(JSON.parse(evt.data) as StreamPayload | DownloadJob[]);
     } catch {
-      /* ignore malformed frame */
+      scheduleHydrate();
     }
   };
   eventSource.onerror = () => {
-    // EventSource auto-reconnects; nothing to do here.
+    scheduleHydrate();
+    if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+      eventSource.close();
+      eventSource = null;
+      if (reconnectTimer != null) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        startEventStream();
+      }, 2000);
+    }
   };
 }
 

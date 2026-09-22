@@ -357,22 +357,31 @@ app.post("/api/jobs/:id/youtube", requireAuth, (req: Request, res: Response) => 
 
 // Server-Sent Events stream for live job updates.
 app.get("/api/events", requireAuth, (req: Request, res: Response) => {
+  req.socket.setTimeout(0);
+  req.socket.setNoDelay(true);
   res.set({
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
+    "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
   });
   res.flushHeaders();
 
   const send = () => {
     res.write(`data: ${JSON.stringify({ jobs: queue.list(), storage: getStorageInfo() })}\n\n`);
+    const flush = (res as Response & { flush?: () => void }).flush;
+    if (typeof flush === "function") flush.call(res);
   };
 
   send();
   const onUpdate = () => send();
   queue.on("update", onUpdate);
 
-  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 25000);
+  const heartbeat = setInterval(() => {
+    res.write(": heartbeat\n\n");
+    const flush = (res as Response & { flush?: () => void }).flush;
+    if (typeof flush === "function") flush.call(res);
+  }, 15000);
 
   req.on("close", () => {
     clearInterval(heartbeat);

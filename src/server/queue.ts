@@ -27,6 +27,27 @@ import { invalidateStorageCache, isStorageFull } from "./storage";
 
 const JOBS_PATH = process.env.JOBS_PATH || path.join(__dirname, "..", "..", "data", "jobs.json");
 const MAX_LOG_LINES = 200;
+const MAX_PUBLIC_LOG_LINES = 40;
+const UPDATE_THROTTLE_MS = 250;
+
+/** yt-dlp progress spam — already reflected in progressPercent / speed / eta. */
+function isNoisyLogLine(line: string): boolean {
+  return (
+    /\[download\]\s+\d{1,3}(?:\.\d+)?%\s+of\b/i.test(line) ||
+    /Downloading fragment\s+\d+/i.test(line)
+  );
+}
+
+function sanitizeLog(lines: unknown): string[] {
+  if (!Array.isArray(lines)) return [];
+  return lines
+    .filter((line): line is string => typeof line === "string" && !isNoisyLogLine(line))
+    .slice(-MAX_LOG_LINES);
+}
+
+function toClientJob(job: DownloadJob): DownloadJob {
+  return { ...job, log: job.log.slice(-MAX_PUBLIC_LOG_LINES) };
+}
 
 function defaultYoutubeStatus(): YoutubeStatus {
   return "idle";
@@ -48,7 +69,7 @@ function normalizeJob(raw: Partial<DownloadJob> & { id: string; url: string }): 
     createdAt: raw.createdAt || new Date().toISOString(),
     startedAt: raw.startedAt ?? null,
     completedAt: raw.completedAt ?? null,
-    log: Array.isArray(raw.log) ? raw.log : [],
+    log: sanitizeLog(raw.log),
     channel: raw.channel ?? null,
     channelUrl: raw.channelUrl ?? null,
     vodDate: raw.vodDate ?? null,
@@ -68,6 +89,8 @@ class DownloadQueue extends EventEmitter {
   private abortController: DownloadController | null = null;
   private currentJobId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private emitTimer: ReturnType<typeof setTimeout> | null = null;
+  private emitDirty = false;
   private youtubeUploading = new Set<string>();
 
   constructor() {
@@ -129,7 +152,25 @@ class DownloadQueue extends EventEmitter {
   }
 
   private emitUpdate(immediatePersist = true): void {
-    if (immediatePersist) invalidateStorageCache();
+    if (immediatePersist) {
+      invalidateStorageCache();
+      this.flushEmit(true);
+      return;
+    }
+    this.emitDirty = true;
+    if (this.emitTimer) return;
+    this.emitTimer = setTimeout(() => {
+      this.emitTimer = null;
+      if (this.emitDirty) this.flushEmit(false);
+    }, UPDATE_THROTTLE_MS);
+  }
+
+  private flushEmit(immediatePersist: boolean): void {
+    this.emitDirty = false;
+    if (this.emitTimer) {
+      clearTimeout(this.emitTimer);
+      this.emitTimer = null;
+    }
     this.emit("update", this.list());
     if (immediatePersist) {
       if (this.persistTimer) {
@@ -147,9 +188,9 @@ class DownloadQueue extends EventEmitter {
   }
 
   list(): DownloadJob[] {
-    return [...this.jobs].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
+    return [...this.jobs]
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      .map(toClientJob);
   }
 
   get(id: string): DownloadJob | undefined {
@@ -407,11 +448,13 @@ class DownloadQueue extends EventEmitter {
     }
   }
 
-  private appendLog(job: DownloadJob, line: string): void {
+  private appendLog(job: DownloadJob, line: string): boolean {
+    if (!line || isNoisyLogLine(line)) return false;
     job.log.push(line);
     if (job.log.length > MAX_LOG_LINES) {
       job.log = job.log.slice(job.log.length - MAX_LOG_LINES);
     }
+    return true;
   }
 
   kick(): void {
@@ -465,8 +508,7 @@ class DownloadQueue extends EventEmitter {
             this.emitUpdate(false);
           },
           onLog: (line) => {
-            this.appendLog(job, line);
-            this.emitUpdate(false);
+            if (this.appendLog(job, line)) this.emitUpdate(false);
           },
           onAttempt: (attempt, maxAttempts) => {
             job.attempt = attempt;
