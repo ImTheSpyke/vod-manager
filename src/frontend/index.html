@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Twitch VOD Downloader</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <section id="login-view" class="view hidden">
+      <div class="card login-card">
+        <h1>Twitch VOD Downloader</h1>
+        <form id="login-form">
+          <label>
+            Username
+            <input type="text" id="login-username" autocomplete="username" required />
+          </label>
+          <label>
+            Password
+            <input type="password" id="login-password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Log in</button>
+          <p id="login-error" class="error hidden"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="main-view" class="view hidden">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1>Twitch VOD Downloader</h1>
+          <div class="storage-widget" title="Download folder usage">
+            <div class="storage-label-row">
+              <span>Storage</span>
+              <span id="storage-label">— / 30 GB</span>
+            </div>
+            <div class="progress-track storage-track">
+              <div id="storage-fill" class="progress-fill"></div>
+            </div>
+            <p id="storage-full-hint" class="storage-full-hint hidden">Storage is full. Delete files to start new downloads.</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <label id="auto-upload-wrap" class="checkbox-row auto-upload-toggle hidden">
+            <input type="checkbox" id="auto-upload-toggle" />
+            Auto-upload
+          </label>
+          <span id="whoami"></span>
+          <button id="settings-btn" class="secondary">Settings</button>
+          <button id="logout-btn" class="secondary">Log out</button>
+        </div>
+      </header>
+
+      <main>
+        <div class="card">
+          <h2>Add VOD(s)</h2>
+          <p class="hint">Paste one or more Twitch VOD links, one per line (e.g. https://www.twitch.tv/videos/2880295967). They'll be downloaded one at a time, at the best available quality, with automatic retries.</p>
+          <textarea id="url-input" rows="3" placeholder="https://www.twitch.tv/videos/2880295967"></textarea>
+          <div id="add-error" class="error hidden"></div>
+          <button id="add-btn">Get VOD</button>
+        </div>
+
+        <div class="card">
+          <h2>Queue</h2>
+          <div id="job-list" class="job-list">
+            <p class="empty-state">No downloads yet.</p>
+          </div>
+        </div>
+      </main>
+    </section>
+
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal card">
+        <h2>NTFY Settings</h2>
+        <form id="settings-form">
+          <label class="checkbox-row">
+            <input type="checkbox" id="ntfy-enabled" />
+            Enable notifications
+          </label>
+          <label>
+            Server URL
+            <input type="text" id="ntfy-server" placeholder="https://ntfy.sh" />
+          </label>
+          <label>
+            Topic
+            <input type="text" id="ntfy-topic" placeholder="twitch-vod-downloader" />
+          </label>
+          <label>
+            Username <span class="optional">(optional)</span>
+            <input type="text" id="ntfy-username" autocomplete="off" />
+          </label>
+          <label>
+            Password <span class="optional">(optional)</span>
+            <input type="password" id="ntfy-password" autocomplete="off" />
+          </label>
+          <label>
+            Priority (1-5)
+            <input type="number" id="ntfy-priority" min="1" max="5" />
+          </label>
+          <div class="settings-section">
+            <h2>YouTube</h2>
+            <label class="checkbox-row">
+              <input type="checkbox" id="yt-auto-upload" />
+              Auto-upload after download
+            </label>
+            <p class="hint">Uses the last producer / observers / playlist / privacy from the upload popup. Titles stay <code>[VOD] YYYY-MM-DD - …</code> unless you upload manually and edit them.</p>
+            <p class="hint">Authorize from here when the token expires. In Google Cloud, use a <strong>Web application</strong> OAuth client. Add the URL below as an Authorized redirect URI, and your site origin (e.g. https://your.domain) as an Authorized JavaScript origin if asked.</p>
+            <label>
+              Redirect URI
+              <input type="text" id="yt-redirect-uri" readonly />
+            </label>
+            <button type="button" id="yt-authorize-btn">Authorize YouTube</button>
+            <div id="yt-token-wrap" class="hidden">
+              <p class="hint">Paste this into <code>YOUTUBE_REFRESH_TOKEN</code> in <code>.env</code>, then restart the app.</p>
+              <textarea id="yt-refresh-token" rows="4" readonly></textarea>
+              <button type="button" id="yt-copy-token" class="secondary">Copy refresh token</button>
+            </div>
+            <p id="yt-oauth-status" class="hint"></p>
+          </div>
+          <div id="settings-error" class="error hidden"></div>
+          <div class="modal-actions">
+            <button type="button" id="settings-cancel" class="secondary">Cancel</button>
+            <button type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="youtube-modal" class="modal-backdrop hidden">
+      <div class="modal card">
+        <h2>Upload to YouTube</h2>
+        <form id="youtube-form">
+          <label>
+            Title
+            <input type="text" id="yt-title" maxlength="100" autocomplete="off" />
+            <span id="yt-title-count" class="char-count">0 / 100</span>
+          </label>
+          <label>
+            Privacy
+            <select id="yt-privacy">
+              <option value="unlisted" selected>Unlisted</option>
+              <option value="public">Public</option>
+              <option value="private">Private</option>
+            </select>
+          </label>
+          <label>
+            Producer
+            <input type="text" id="yt-producer" autocomplete="off" />
+          </label>
+          <label>
+            Observer 1
+            <input type="text" id="yt-observer1" autocomplete="off" />
+          </label>
+          <label>
+            Observer 2
+            <input type="text" id="yt-observer2" autocomplete="off" />
+          </label>
+          <label>
+            Playlist
+            <select id="yt-playlist"></select>
+          </label>
+          <div id="youtube-error" class="error hidden"></div>
+          <div class="modal-actions">
+            <button type="button" id="youtube-cancel" class="secondary">Cancel</button>
+            <button type="submit" id="youtube-submit">Upload</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

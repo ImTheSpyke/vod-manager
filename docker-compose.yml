@@ -1,0 +1,18 @@
+services:
+  twitch-vod-downloader:
+    image: harbor.imthespyke.fr/imthespyke/vod-manager:latest
+    container_name: twitch-vod-downloader
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Behind nginx/caddy on a VPS, bind loopback only:
+      # - "127.0.0.1:3000:3000"
+      - "3000:3000"
+    environment:
+      # App-enforced cap on ./downloads (shown in the storage bar).
+      STORAGE_LIMIT_GB: "30"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./config:/app/config
+      - ./data:/app/data

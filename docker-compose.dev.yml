@@ -1,0 +1,16 @@
+services:
+  twitch-vod-downloader:
+    build: .
+    image: twitch-vod-downloader:dev
+    container_name: twitch-vod-downloader-dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    environment:
+      STORAGE_LIMIT_GB: "30"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./config:/app/config
+      - ./data:/app/data

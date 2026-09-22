@@ -1,0 +1,10 @@
+{
+  "ntfy": {
+    "enabled": true,
+    "server": "http://ntfy.imthespyke.fr/",
+    "topic": "twitch-vod",
+    "username": "",
+    "password": "",
+    "priority": 3
+  }
+}

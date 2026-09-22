@@ -1,0 +1,31 @@
+{
+  "name": "twitch-vod-downloader",
+  "version": "26.3.1",
+  "private": true,
+  "description": "Small self-hosted webapp to queue and download Twitch VODs at max quality via yt-dlp, with NTFY notifications.",
+  "scripts": {
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:frontend": "tsc -p tsconfig.frontend.json && node scripts/copy-static.js",
+    "build": "npm run build:server && npm run build:frontend",
+    "start": "node dist/server/index.js",
+    "dev": "npm run build && npm start",
+    "docker:build": "node scripts/docker-release.js --build",
+    "docker:push": "node scripts/docker-release.js --push",
+    "docker:release": "node scripts/docker-release.js",
+    "docker:dev": "docker compose -f docker-compose.dev.yml up --build",
+    "youtube:oauth": "node scripts/youtube-oauth.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.18.0",
+    "@types/node": "^20.14.2",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.4.5"
+  }
+}
