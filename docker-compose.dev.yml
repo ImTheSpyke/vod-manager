@@ -9,7 +9,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      STORAGE_LIMIT_GB: "30"
+      STORAGE_LIMIT_GB: ${STORAGE_LIMIT_GB}
     volumes:
       - ./downloads:/app/downloads
       - ./config:/app/config

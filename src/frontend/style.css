@@ -269,6 +269,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   word-break: break-word;
 }
 
+.job-warning {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--yellow);
+  word-break: break-word;
+}
+
 details.job-log { margin-top: 8px; }
 details.job-log summary {
   cursor: pointer;

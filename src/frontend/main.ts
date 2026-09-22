@@ -19,6 +19,12 @@ interface DownloadJob {
   vodDate: string | null;
   vodDuration: string | null;
   vodDurationSeconds: number | null;
+  vodSizeBytes: number | null;
+  vodSizeLabel: string | null;
+  ignoreStorageLimit: boolean;
+  pausedForStorage: boolean;
+  storageOverByBytes: number | null;
+  storageOverByLabel: string | null;
   fileDeleted: boolean;
   youtubeStatus: "idle" | "uploading" | "uploaded" | "failed";
   youtubeVideoId: string | null;
@@ -245,7 +251,7 @@ function statusLabel(job: DownloadJob): string {
     case "retrying":
       return `Retrying (${job.attempt}/${job.maxAttempts})`;
     case "paused":
-      return "Paused";
+      return isStorageHold(job) ? "Won't fit" : "Paused";
     case "completed":
       return "Completed";
     case "failed":
@@ -273,23 +279,30 @@ function isActive(job: DownloadJob): boolean {
   return job.status === "downloading" || job.status === "retrying";
 }
 
+function isStorageHold(job: DownloadJob): boolean {
+  if (job.status !== "paused") return false;
+  if (job.pausedForStorage || !!job.storageOverByLabel) return true;
+  return job.log.some((line) => /would exceed storage/i.test(line));
+}
+
 function hasDownloadedFile(job: DownloadJob): boolean {
   return job.status === "completed" && !job.fileDeleted;
 }
 
 function jobMetaItems(job: DownloadJob): string[] {
   const meta: string[] = [];
+  if (job.vodDate) meta.push(job.vodDate);
+  if (job.vodDuration) meta.push(job.vodDuration);
+  if (job.vodSizeLabel) meta.push(job.vodSizeLabel);
   if (isActive(job)) {
     if (job.speed) meta.push(job.speed);
     if (job.eta) meta.push(`ETA ${job.eta}`);
     meta.push(`Attempt ${job.attempt || 1}/${job.maxAttempts}`);
   }
-  if (job.status === "paused") {
+  if (job.status === "paused" && !isStorageHold(job)) {
     meta.push("Partial download kept — resume to continue");
   }
   if (job.status === "completed") {
-    if (job.vodDate) meta.push(job.vodDate);
-    if (job.vodDuration) meta.push(job.vodDuration);
     if (job.youtubeStatus === "uploading") {
       meta.push(`YouTube ${Math.round(job.youtubeProgress || 0)}%`);
     } else if (job.youtubeStatus === "uploaded") {
@@ -305,7 +318,9 @@ function actionSignature(job: DownloadJob): string {
   const active = isActive(job);
   const actions: string[] = [];
   if (active) actions.push("pause");
-  if (job.status === "paused") actions.push("resume");
+  if (job.status === "paused") {
+    actions.push(isStorageHold(job) ? "anyway,resume" : "resume");
+  }
   if (active || job.status === "queued" || job.status === "paused") actions.push("cancel");
   if (hasDownloadedFile(job)) {
     actions.push("download");
@@ -382,7 +397,14 @@ function renderActions(container: HTMLElement, job: DownloadJob): void {
   container.replaceChildren();
   const active = isActive(job);
   if (active) container.appendChild(createActionButton(job.id, "pause", "Pause", "secondary"));
-  if (job.status === "paused") container.appendChild(createActionButton(job.id, "resume", "Resume"));
+  if (job.status === "paused") {
+    if (isStorageHold(job)) {
+      container.appendChild(createActionButton(job.id, "anyway", "Continue anyway"));
+      container.appendChild(createActionButton(job.id, "resume", "Resume", "secondary"));
+    } else {
+      container.appendChild(createActionButton(job.id, "resume", "Resume"));
+    }
+  }
   if (active || job.status === "queued" || job.status === "paused") {
     container.appendChild(createActionButton(job.id, "cancel", "Cancel", "danger"));
   }
@@ -415,9 +437,20 @@ function renderActions(container: HTMLElement, job: DownloadJob): void {
   }
 }
 
+function storageWarningText(job: DownloadJob): string {
+  if (!isStorageHold(job)) return "";
+  const size = job.vodSizeLabel ? `This VOD is ${job.vodSizeLabel} and ` : "This VOD ";
+  if (job.storageOverByLabel) return `${size}would exceed storage by ${job.storageOverByLabel}.`;
+  return `${size}would exceed the storage limit.`;
+}
+
 function updateLog(card: HTMLElement, job: DownloadJob): void {
   let details = card.querySelector("details.job-log") as HTMLDetailsElement | null;
-  if (job.log.length === 0) return;
+  const lines = job.log.slice(-30);
+  if (lines.length === 0) {
+    details?.remove();
+    return;
+  }
   if (!details) {
     details = document.createElement("details");
     details.className = "job-log";
@@ -428,8 +461,8 @@ function updateLog(card: HTMLElement, job: DownloadJob): void {
   }
   const summary = details.querySelector("summary") as HTMLElement;
   const pre = details.querySelector("pre") as HTMLElement;
-  setText(summary, `Log (${job.log.length} lines)`);
-  const text = job.log.slice(-60).join("\n");
+  setText(summary, `Log (last ${lines.length} line${lines.length === 1 ? "" : "s"})`);
+  const text = lines.join("\n");
   if (pre.textContent === text) return;
   const nearBottom = details.open && pre.scrollHeight - pre.scrollTop - pre.clientHeight < 32;
   pre.textContent = text;
@@ -469,6 +502,13 @@ function updateJobCard(card: HTMLElement, job: DownloadJob): void {
   }
   metaEl.classList.toggle("hidden", meta.length === 0);
 
+  const warnEl = card.querySelector(".job-warning") as HTMLElement | null;
+  const warning = storageWarningText(job);
+  if (warnEl) {
+    setText(warnEl, warning);
+    warnEl.classList.toggle("hidden", !warning);
+  }
+
   const errorText = [job.lastError, job.youtubeError].filter(Boolean).join("\n");
   const errorEl = card.querySelector(".job-error") as HTMLElement;
   setText(errorEl, errorText);
@@ -484,7 +524,7 @@ function createJobCard(job: DownloadJob): HTMLElement {
   card.innerHTML =
     '<div class="job-header"><div><div class="job-title"></div><div class="job-url"></div></div><span class="badge"></span></div>' +
     '<div class="progress-row"><div class="progress-track"><div class="progress-fill"></div></div><span class="progress-pct"></span></div>' +
-    '<div class="job-meta"></div><div class="job-error"></div><div class="job-actions"></div>';
+    '<div class="job-meta"></div><div class="job-warning"></div><div class="job-error"></div><div class="job-actions"></div>';
   updateJobCard(card, job);
   return card;
 }
@@ -552,6 +592,8 @@ jobList.addEventListener("click", async (e) => {
       await api(`/api/jobs/${id}/pause`, { method: "POST" });
     } else if (action === "resume") {
       await api(`/api/jobs/${id}/resume`, { method: "POST" });
+    } else if (action === "anyway") {
+      await api(`/api/jobs/${id}/resume`, { method: "POST", body: JSON.stringify({ anyway: true }) });
     } else if (action === "cancel") {
       await api(`/api/jobs/${id}/cancel`, { method: "POST" });
     } else if (action === "youtube") {

@@ -30,6 +30,12 @@ export interface DownloadJob {
   vodDate: string | null;
   vodDuration: string | null;
   vodDurationSeconds: number | null;
+  vodSizeBytes: number | null;
+  vodSizeLabel: string | null;
+  ignoreStorageLimit: boolean;
+  pausedForStorage: boolean;
+  storageOverByBytes: number | null;
+  storageOverByLabel: string | null;
   fileDeleted: boolean;
   youtubeStatus: YoutubeStatus;
   youtubeVideoId: string | null;

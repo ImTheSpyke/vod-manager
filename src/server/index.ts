@@ -17,7 +17,7 @@ import {
   exchangeYoutubeAuthCode,
   parseYoutubePrivacy,
 } from "./youtube";
-import { getStorageInfo, isStorageFull } from "./storage";
+import { getStorageInfo } from "./storage";
 
 ensureSettingsFile();
 
@@ -224,15 +224,6 @@ app.post("/api/jobs", requireAuth, (req: Request, res: Response) => {
     return;
   }
 
-  if (isStorageFull()) {
-    const storage = getStorageInfo();
-    res.status(507).json({
-      error: `Storage is full (${storage.usedLabel} / ${storage.limitLabel}). Delete files to free space.`,
-      storage,
-    });
-    return;
-  }
-
   const created = [];
   const rejected = [];
   for (const url of cleaned) {
@@ -265,7 +256,8 @@ app.post("/api/jobs/:id/pause", requireAuth, (req: Request, res: Response) => {
 });
 
 app.post("/api/jobs/:id/resume", requireAuth, (req: Request, res: Response) => {
-  const ok = queue.resume(req.params.id);
+  const anyway = !!(req.body && req.body.anyway);
+  const ok = queue.resume(req.params.id, { anyway });
   if (!ok) {
     res.status(400).json({ error: "Job not found or not paused" });
     return;

@@ -11,7 +11,7 @@ services:
       - "3000:3000"
     environment:
       # App-enforced cap on ./downloads (shown in the storage bar).
-      STORAGE_LIMIT_GB: "30"
+      STORAGE_LIMIT_GB: ${STORAGE_LIMIT_GB}
     volumes:
       - ./downloads:/app/downloads
       - ./config:/app/config

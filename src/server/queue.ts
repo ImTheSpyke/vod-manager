@@ -5,12 +5,14 @@ import { v4 as uuidv4 } from "uuid";
 import { DownloadJob, YoutubeStatus } from "./types";
 import {
   cleanupPartialDownloads,
+  diskUsageForUrl,
   downloadVod,
   DownloadAbortError,
   DownloadController,
   findCompletedFile,
   formatDuration,
   resolveManagedFile,
+  VodInfo,
 } from "./downloader";
 import { sendNtfyNotification } from "./notify";
 import {
@@ -23,26 +25,16 @@ import {
   resolvePlaylistId,
 } from "./youtube";
 import { getYoutubeSettings } from "./settings";
-import { invalidateStorageCache, isStorageFull } from "./storage";
+import { formatBytes, getStorageInfo, invalidateStorageCache } from "./storage";
 
 const JOBS_PATH = process.env.JOBS_PATH || path.join(__dirname, "..", "..", "data", "jobs.json");
-const MAX_LOG_LINES = 200;
-const MAX_PUBLIC_LOG_LINES = 40;
+const MAX_LOG_LINES = 80;
+const MAX_PUBLIC_LOG_LINES = 30;
 const UPDATE_THROTTLE_MS = 250;
-
-/** yt-dlp progress spam — already reflected in progressPercent / speed / eta. */
-function isNoisyLogLine(line: string): boolean {
-  return (
-    /\[download\]\s+\d{1,3}(?:\.\d+)?%\s+of\b/i.test(line) ||
-    /Downloading fragment\s+\d+/i.test(line)
-  );
-}
 
 function sanitizeLog(lines: unknown): string[] {
   if (!Array.isArray(lines)) return [];
-  return lines
-    .filter((line): line is string => typeof line === "string" && !isNoisyLogLine(line))
-    .slice(-MAX_LOG_LINES);
+  return lines.filter((line): line is string => typeof line === "string" && line.length > 0).slice(-MAX_LOG_LINES);
 }
 
 function toClientJob(job: DownloadJob): DownloadJob {
@@ -75,6 +67,17 @@ function normalizeJob(raw: Partial<DownloadJob> & { id: string; url: string }): 
     vodDate: raw.vodDate ?? null,
     vodDuration: raw.vodDuration ?? null,
     vodDurationSeconds: raw.vodDurationSeconds ?? null,
+    vodSizeBytes: raw.vodSizeBytes ?? null,
+    vodSizeLabel: raw.vodSizeLabel ?? null,
+    ignoreStorageLimit: !!raw.ignoreStorageLimit,
+    pausedForStorage:
+      !!raw.pausedForStorage ||
+      (!!raw.storageOverByLabel && raw.status === "paused") ||
+      (raw.status === "paused" &&
+        Array.isArray(raw.log) &&
+        raw.log.some((line) => typeof line === "string" && /would exceed storage/i.test(line))),
+    storageOverByBytes: raw.storageOverByBytes ?? null,
+    storageOverByLabel: raw.storageOverByLabel ?? null,
     fileDeleted: !!raw.fileDeleted,
     youtubeStatus: raw.youtubeStatus || defaultYoutubeStatus(),
     youtubeVideoId: raw.youtubeVideoId ?? null,
@@ -109,8 +112,16 @@ class DownloadQueue extends EventEmitter {
         this.appendLog(job, "YouTube upload was interrupted by restart.");
       }
       if (job.status === "completed" && job.outputFile && !job.fileDeleted) {
-        if (!resolveManagedFile(job.outputFile) && !findCompletedFile(job.url)) {
+        const resolved = resolveManagedFile(job.outputFile) || findCompletedFile(job.url);
+        if (!resolved) {
           job.fileDeleted = true;
+        } else if (job.vodSizeBytes == null) {
+          try {
+            job.vodSizeBytes = fs.statSync(resolved).size;
+            job.vodSizeLabel = formatBytes(job.vodSizeBytes);
+          } catch {
+            /* keep unknown */
+          }
         }
       }
     }
@@ -225,6 +236,12 @@ class DownloadQueue extends EventEmitter {
       vodDate: null,
       vodDuration: null,
       vodDurationSeconds: null,
+      vodSizeBytes: null,
+      vodSizeLabel: null,
+      ignoreStorageLimit: false,
+      pausedForStorage: false,
+      storageOverByBytes: null,
+      storageOverByLabel: null,
       fileDeleted: false,
       youtubeStatus: "idle",
       youtubeVideoId: null,
@@ -280,14 +297,18 @@ class DownloadQueue extends EventEmitter {
     return true;
   }
 
-  resume(id: string): boolean {
+  resume(id: string, opts: { anyway?: boolean } = {}): boolean {
     const job = this.get(id);
     if (!job || job.status !== "paused") return false;
+    if (opts.anyway) job.ignoreStorageLimit = true;
+    job.pausedForStorage = false;
+    job.storageOverByBytes = null;
+    job.storageOverByLabel = null;
     job.status = "queued";
     job.lastError = null;
     job.speed = null;
     job.eta = null;
-    this.appendLog(job, "Resumed by user.");
+    this.appendLog(job, opts.anyway ? "Continuing anyway — storage limit ignored for this VOD." : "Resumed by user.");
     this.emitUpdate();
     this.kick();
     return true;
@@ -316,6 +337,9 @@ class DownloadQueue extends EventEmitter {
     job.speed = null;
     job.eta = null;
     job.lastError = null;
+    job.pausedForStorage = false;
+    job.storageOverByBytes = null;
+    job.storageOverByLabel = null;
     this.appendLog(job, "Canceled by user.");
     cleanupPartialDownloads(job.url);
     this.emitUpdate();
@@ -449,7 +473,7 @@ class DownloadQueue extends EventEmitter {
   }
 
   private appendLog(job: DownloadJob, line: string): boolean {
-    if (!line || isNoisyLogLine(line)) return false;
+    if (!line) return false;
     job.log.push(line);
     if (job.log.length > MAX_LOG_LINES) {
       job.log = job.log.slice(job.log.length - MAX_LOG_LINES);
@@ -457,9 +481,44 @@ class DownloadQueue extends EventEmitter {
     return true;
   }
 
+  private applySize(job: DownloadJob, bytes: number | null | undefined): boolean {
+    if (bytes == null || bytes <= 0) return false;
+    if (job.vodSizeBytes != null && bytes < job.vodSizeBytes * 1.02) return false;
+    job.vodSizeBytes = bytes;
+    job.vodSizeLabel = formatBytes(bytes);
+    return true;
+  }
+
+  private applyVodInfo(job: DownloadJob, info: VodInfo): void {
+    if (info.title) job.title = info.title;
+    if (info.channel) job.channel = info.channel;
+    if (info.channelUrl) job.channelUrl = info.channelUrl;
+    if (info.uploadDate) job.vodDate = info.uploadDate;
+    if (info.durationSeconds != null) job.vodDurationSeconds = info.durationSeconds;
+    if (info.durationLabel) job.vodDuration = info.durationLabel;
+    this.applySize(job, info.filesizeBytes);
+  }
+
+  /** Pause before filling disk when this VOD would push usage over the cap. */
+  private maybePauseForStorage(job: DownloadJob): boolean {
+    if (job.ignoreStorageLimit) return false;
+    if (job.vodSizeBytes == null || job.vodSizeBytes <= 0) return job.pausedForStorage;
+    invalidateStorageCache();
+    const storage = getStorageInfo(true);
+    const already = diskUsageForUrl(job.url);
+    const projected = storage.usedBytes - already + job.vodSizeBytes;
+    const overBy = projected - storage.limitBytes;
+    if (overBy > 0) {
+      job.pausedForStorage = true;
+      job.storageOverByBytes = overBy;
+      job.storageOverByLabel = formatBytes(overBy);
+      return true;
+    }
+    return job.pausedForStorage;
+  }
+
   kick(): void {
     if (this.processing) return;
-    if (isStorageFull()) return;
     const next = this.jobs.find((j) => j.status === "queued");
     if (!next) return;
     this.processing = true;
@@ -501,10 +560,16 @@ class DownloadQueue extends EventEmitter {
       const result = await downloadVod(
         job.url,
         {
-          onProgress: ({ percent, speed, eta }) => {
+          onProgress: ({ percent, speed, eta, totalBytes }) => {
             job.progressPercent = percent;
             job.speed = speed;
             job.eta = eta;
+            this.applySize(job, totalBytes);
+            if (this.maybePauseForStorage(job)) {
+              this.abortController?.abort("pause");
+              this.emitUpdate();
+              return;
+            }
             this.emitUpdate(false);
           },
           onLog: (line) => {
@@ -518,12 +583,12 @@ class DownloadQueue extends EventEmitter {
             this.emitUpdate();
           },
           onInfo: (info) => {
-            if (info.title) job.title = info.title;
-            if (info.channel) job.channel = info.channel;
-            if (info.channelUrl) job.channelUrl = info.channelUrl;
-            if (info.uploadDate) job.vodDate = info.uploadDate;
-            if (info.durationSeconds != null) job.vodDurationSeconds = info.durationSeconds;
-            if (info.durationLabel) job.vodDuration = info.durationLabel;
+            this.applyVodInfo(job, info);
+            if (this.maybePauseForStorage(job)) {
+              this.abortController?.abort("pause");
+              this.emitUpdate();
+              return;
+            }
             this.emitUpdate(false);
           },
         },
@@ -542,6 +607,7 @@ class DownloadQueue extends EventEmitter {
       job.vodDuration =
         result.durationLabel ||
         (result.durationSeconds != null ? formatDuration(result.durationSeconds) : job.vodDuration);
+      this.applySize(job, result.filesizeBytes);
       job.fileDeleted = !this.resolveOutputFile(job.id);
       job.eta = null;
       job.speed = null;
@@ -559,12 +625,24 @@ class DownloadQueue extends EventEmitter {
         job.eta = null;
         if (err.reason === "pause") {
           job.status = "paused";
-          this.appendLog(job, "Paused by user. Partial download is kept and can be resumed.");
+          if (job.pausedForStorage || job.storageOverByLabel) {
+            job.pausedForStorage = true;
+            if (!job.storageOverByLabel) this.maybePauseForStorage(job);
+            this.appendLog(
+              job,
+              `Paused: this VOD is ${job.vodSizeLabel || "unknown size"} and would exceed storage by ${job.storageOverByLabel || "the remaining limit"}.`
+            );
+          } else {
+            this.appendLog(job, "Paused by user. Partial download is kept and can be resumed.");
+          }
           this.emitUpdate();
           return;
         }
         job.status = "canceled";
         job.completedAt = new Date().toISOString();
+        job.storageOverByBytes = null;
+        job.storageOverByLabel = null;
+        job.pausedForStorage = false;
         this.appendLog(job, "Canceled by user.");
         cleanupPartialDownloads(job.url);
         this.emitUpdate();
@@ -595,6 +673,9 @@ class DownloadQueue extends EventEmitter {
     job.attempt = 0;
     job.lastError = null;
     job.completedAt = null;
+    job.storageOverByBytes = null;
+    job.storageOverByLabel = null;
+    job.pausedForStorage = false;
     this.emitUpdate();
     this.kick();
     return true;

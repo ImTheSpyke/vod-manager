@@ -2,18 +2,26 @@ import { ChildProcess, execFileSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
+export interface VodInfo {
+  title: string | null;
+  channel: string | null;
+  channelUrl: string | null;
+  uploadDate: string | null;
+  durationSeconds: number | null;
+  durationLabel: string | null;
+  filesizeBytes: number | null;
+}
+
 export interface DownloadCallbacks {
-  onProgress: (info: { percent: number; speed: string | null; eta: string | null }) => void;
+  onProgress: (info: {
+    percent: number;
+    speed: string | null;
+    eta: string | null;
+    totalBytes: number | null;
+  }) => void;
   onLog: (line: string) => void;
   onAttempt: (attempt: number, maxAttempts: number) => void;
-  onInfo?: (info: {
-    title: string | null;
-    channel: string | null;
-    channelUrl: string | null;
-    uploadDate: string | null;
-    durationSeconds: number | null;
-    durationLabel: string | null;
-  }) => void;
+  onInfo?: (info: VodInfo) => void;
 }
 
 export interface DownloadResult {
@@ -24,6 +32,7 @@ export interface DownloadResult {
   uploadDate: string | null;
   durationSeconds: number | null;
   durationLabel: string | null;
+  filesizeBytes: number | null;
 }
 
 export type DownloadAbortReason = "pause" | "cancel";
@@ -105,6 +114,23 @@ export function formatDuration(seconds: number): string {
   const sec = s % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** Parse yt-dlp sizes (`7629419520`, `7.09GiB`, `7.09GB`). */
+export function parseYtDlpSize(raw: string | null | undefined): number | null {
+  if (raw == null) return null;
+  const text = String(raw).trim();
+  if (!text || /^(NA|None|Unknown|N\/A)$/i.test(text)) return null;
+  const human = text.match(/^(\d+(?:\.\d+)?)\s*([KMGT])i?B$/i);
+  if (human) {
+    const n = parseFloat(human[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const exp = { K: 1, M: 2, G: 3, T: 4 }[human[2].toUpperCase()] || 0;
+    return Math.round(n * Math.pow(1024, exp));
+  }
+  const bytes = Number(text);
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  return Math.round(bytes);
 }
 
 export function formatVodDate(raw: string | null | undefined): string | null {
@@ -207,7 +233,7 @@ class EtaSmoother {
 function parseProgressLine(
   line: string,
   fragmentState: { total: number | null }
-): { percent: number; speed: string | null; eta: string | null } | null {
+): { percent: number; speed: string | null; eta: string | null; totalBytes: number | null } | null {
   const fragTotal = line.match(/Total fragments:\s*(\d+)/i);
   if (fragTotal) {
     fragmentState.total = parseInt(fragTotal[1], 10);
@@ -220,19 +246,20 @@ function parseProgressLine(
     fragmentState.total = total;
     if (total > 0) {
       const percent = Math.min(100, (current / total) * 100);
-      return { percent, speed: null, eta: null };
+      return { percent, speed: null, eta: null, totalBytes: null };
     }
   }
 
   const match = line.match(
-    /\[download\]\s+(\d{1,3}(?:\.\d+)?)%\s+of\s+~?\s*\S+(?:\s+at\s+(\S+))?(?:\s+ETA\s+(\S+))?/i
+    /\[download\]\s+(\d{1,3}(?:\.\d+)?)%\s+of\s+~?\s*(\S+)(?:\s+at\s+(\S+))?(?:\s+ETA\s+(\S+))?/i
   );
   if (!match) return null;
   const percent = parseFloat(match[1]);
   if (Number.isNaN(percent)) return null;
-  const speed = match[2] && match[2] !== "Unknown" ? match[2] : null;
-  const eta = match[3] && match[3] !== "Unknown" ? match[3] : null;
-  return { percent, speed, eta };
+  const totalBytes = parseYtDlpSize(match[2]);
+  const speed = match[3] && match[3] !== "Unknown" ? match[3] : null;
+  const eta = match[4] && match[4] !== "Unknown" ? match[4] : null;
+  return { percent, speed, eta, totalBytes };
 }
 
 function parseDateFromFilename(filePath: string): string | null {
@@ -300,6 +327,28 @@ export function findCompletedFile(url: string): string | null {
     return /\.(mp4|mkv|webm)$/i.test(name);
   });
   return match ? path.join(DOWNLOAD_DIR, match) : null;
+}
+
+/** Bytes already on disk for this VOD (final file and/or yt-dlp fragments). */
+export function diskUsageForUrl(url: string): number {
+  const id = extractVodId(url);
+  if (!id || !fs.existsSync(DOWNLOAD_DIR)) return 0;
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(DOWNLOAD_DIR);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const name of entries) {
+    if (!name.includes(id)) continue;
+    try {
+      total += fs.statSync(path.join(DOWNLOAD_DIR, name)).size;
+    } catch {
+      /* skip */
+    }
+  }
+  return total;
 }
 
 /** Remove yt-dlp temp/partial files for a VOD so a canceled job does not leave junk. */
@@ -374,14 +423,7 @@ function pickChannelUrl(
   return null;
 }
 
-function parseMetaLine(line: string): {
-  uploadDate: string | null;
-  durationSeconds: number | null;
-  durationLabel: string | null;
-  channel: string | null;
-  channelUrl: string | null;
-  title: string | null;
-} | null {
+function parseMetaLine(line: string): VodInfo | null {
   const raw = line.startsWith("META:") ? line.slice(5) : "";
   if (!raw) return null;
   const [
@@ -393,6 +435,7 @@ function parseMetaLine(line: string): {
     uploaderIdRaw,
     channelUrlRaw,
     uploaderUrlRaw,
+    filesizeRaw,
     ...titleParts
   ] = raw.split("|");
   const uploadDate = formatVodDate(dateRaw && dateRaw !== "NA" ? dateRaw : null);
@@ -405,8 +448,17 @@ function parseMetaLine(line: string): {
     (durationSeconds != null ? formatDuration(durationSeconds) : null);
   const channel = pickChannel(uploaderRaw, channelRaw);
   const channelUrl = pickChannelUrl(channelUrlRaw, uploaderUrlRaw, uploaderIdRaw);
+  const filesizeBytes = parseYtDlpSize(filesizeRaw);
   const title = cleanMetaField(titleParts.join("|"));
-  return { uploadDate, durationSeconds, durationLabel, channel, channelUrl, title };
+  return {
+    uploadDate,
+    durationSeconds,
+    durationLabel,
+    channel,
+    channelUrl,
+    title,
+    filesizeBytes,
+  };
 }
 
 /**
@@ -443,7 +495,9 @@ function runYtDlpOnce(
       "--retry-sleep",
       "linear=5:30:5",
       "--print",
-      "META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(title)s",
+      "before_dl:META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(title)s",
+      "--print",
+      "META:%(upload_date)s|%(duration)s|%(duration_string)s|%(uploader)s|%(channel)s|%(uploader_id)s|%(channel_url)s|%(uploader_url)s|%(filesize,filesize_approx)s|%(title)s",
       "--print",
       "after_move:FILE:%(filepath)s",
       "-o",
@@ -483,7 +537,8 @@ function runYtDlpOnce(
         callbacks.onLog(line);
         const progress = parseProgressLine(line, fragmentState);
         if (progress) {
-          callbacks.onProgress(smoother.update(progress.percent, progress.eta, progress.speed));
+          const smoothed = smoother.update(progress.percent, progress.eta, progress.speed);
+          callbacks.onProgress({ ...smoothed, totalBytes: progress.totalBytes });
         }
       }
     };
@@ -512,6 +567,14 @@ function runYtDlpOnce(
         const channel = meta?.channel || null;
         const channelUrl = meta?.channelUrl || null;
         const uploadDate = meta?.uploadDate || (outputFile ? parseDateFromFilename(outputFile) : null);
+        let filesizeBytes = meta?.filesizeBytes ?? null;
+        if (outputFile) {
+          try {
+            filesizeBytes = fs.statSync(outputFile).size || filesizeBytes;
+          } catch {
+            /* keep probe/meta size */
+          }
+        }
         settle(() =>
           resolve({
             outputFile,
@@ -521,6 +584,7 @@ function runYtDlpOnce(
             uploadDate,
             durationSeconds,
             durationLabel,
+            filesizeBytes,
           })
         );
         return;
